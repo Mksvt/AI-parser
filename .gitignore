@@ -1,0 +1,10 @@
+# Файл для конфігурацій
+.env
+# Віртуальне середовище
+.venv/
+# Кеш Python
+__pycache__/
+.pytest_cache/
+# IDE
+.idea/
+.vscode/
