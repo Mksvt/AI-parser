@@ -20,12 +20,21 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 import aiohttp
 from bs4 import BeautifulSoup
 from newspaper import Article  # type: ignore
+import openai
 
 # ================== CONFIG ==================
 load_dotenv()
 API_TOKEN = os.getenv("API_TOKEN")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
 if not API_TOKEN:
     raise ValueError("API_TOKEN not found in .env")
+
+if not OPENAI_API_KEY or OPENAI_API_KEY == "YOUR_OPENAI_API_KEY_HERE":
+    logging.warning("OPENAI_API_KEY not found in .env or is a placeholder. Falling back to basic summarizer.")
+    openai.api_key = None
+else:
+    openai.api_key = OPENAI_API_KEY
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN)
@@ -131,8 +140,44 @@ async def search_links(site: str, query: str, session: aiohttp.ClientSession) ->
         return []
 
 # ================== SUMMARY ==================
+async def get_ai_summary(texts: list[str], query: str) -> str:
+    """Generate a summary using OpenAI's GPT."""
+    if not openai.api_key:
+        logging.warning("OpenAI API key not set. Falling back to basic summarizer.")
+        return summarize_texts(texts)
+
+    full_text = "\n\n".join(texts)
+    # Truncate to avoid exceeding token limits
+    max_length = 12000  # Roughly 3000 tokens
+    if len(full_text) > max_length:
+        full_text = full_text[:max_length]
+
+    try:
+        loop = asyncio.get_event_loop()
+        response = await loop.run_in_executor(
+            None,
+            lambda: openai.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": "You are a helpful assistant that summarizes texts."},
+                    {"role": "user", "content": f"Based on the following articles, provide a concise summary of the key findings regarding '{query}'. The summary should be a single, coherent paragraph of 3-5 sentences. Here is the text:\n\n{full_text}"}
+                ],
+                temperature=0.5,
+                max_tokens=150,
+                top_p=1.0,
+                frequency_penalty=0.0,
+                presence_penalty=0.0
+            )
+        )
+        if response.choices:
+            return response.choices[0].message.content.strip()
+        return "Could not generate an AI summary."
+    except Exception as e:
+        logging.error("Error calling OpenAI API: %s", e)
+        return "Failed to generate AI summary. Falling back to basic method."
+
 def summarize_texts(texts: list[str], max_sentences: int = 3) -> str:
-    """Create a short summary based on article texts."""
+    """Create a short summary based on article texts (basic fallback)."""
     sentences: list[str] = []
     for txt in texts:
         parts = re.split(r'(?<=[.!?]) +', txt)
@@ -208,7 +253,7 @@ async def find_handler(message: types.Message, command: CommandObject) -> None:
         await msg.edit_text("Could not extract content from the pages.")
         return
 
-    summary = summarize_texts(texts)
+    summary = await get_ai_summary(texts, query) if openai.api_key else summarize_texts(texts)
 
     response = f"🔎 *Query:* {query}\n\n"
     response += "🔍 *Key Ideas:*\n" + "\n\n".join(f"- {idea}" for idea in ideas) + "\n\n"
