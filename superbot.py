@@ -313,6 +313,23 @@ async def copy_summary(callback_query: types.CallbackQuery) -> None:
         await msg.reply("Conclusion not found. The cache might have expired.")
     await callback_query.answer()
 
+@dp.message(Command("addsite"))
+async def add_site_handler(message: types.Message, command: CommandObject) -> None:
+    """Allow users to add a custom site for parsing."""
+    site_url = command.args
+    if not site_url:
+        await message.reply("Please provide a valid site URL after the command.\nExample: `/addsite https://example.com`")
+        return
+
+    # Validate the URL
+    if not re.match(r'https?://[\w.-]+', site_url):
+        await message.reply("Invalid URL format. Please provide a valid site URL.")
+        return
+
+    # Add the site to the SITES dictionary dynamically
+    SITES[site_url] = site_url + "?q={}"
+    await message.reply(f"The site `{site_url}` has been added successfully! You can now use `/find` to search it.")
+
 # ================== RUN ==================
 async def main() -> None:
     """Start the bot."""
