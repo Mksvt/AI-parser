@@ -21,6 +21,7 @@ import aiohttp
 from bs4 import BeautifulSoup
 from newspaper import Article  # type: ignore
 import openai
+from openai import OpenAIError
 
 # ================== CONFIG ==================
 load_dotenv()
@@ -170,9 +171,10 @@ async def get_ai_summary(texts: list[str], query: str) -> str:
             )
         )
         if response.choices:
-            return response.choices[0].message.content.strip()
+            choice_content = response.choices[0].message.content if response.choices[0].message.content else ""
+            return choice_content.strip()
         return "Could not generate an AI summary."
-    except Exception as e:
+    except (OpenAIError, ValueError, TypeError) as e:
         logging.error("Error calling OpenAI API: %s", e)
         return "Failed to generate AI summary. Falling back to basic method."
 
@@ -191,14 +193,47 @@ def summarize_texts(texts: list[str], max_sentences: int = 3) -> str:
     summary = " ".join(ranked[:max_sentences])
     return summary.strip()
 
-# ================== BOT HANDLERS ==================
+# ================== LANGUAGE SUPPORT ==================
+user_languages = {}
+
 @dp.message(Command("start", "help"))
 async def start_handler(message: types.Message):
+    """Handle the /start and /help commands to display a welcome message and language options."""
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="English", callback_data="lang:en"),
+             InlineKeyboardButton(text="Українська", callback_data="lang:uk")]
+        ]
+    )
     await message.reply(
-        "Hi! I'm a parser bot. Use the /find command to search for articles.\n"
-        "Example: `/find best python frameworks`"
+        "Hi! I'm a parser bot. Please select your language:",
+        reply_markup=keyboard
     )
 
+@dp.callback_query(F.data.startswith("lang:"))
+async def set_language(callback_query: types.CallbackQuery):
+    """Set the user's preferred language based on their selection."""
+    if not callback_query.data:
+        await callback_query.answer("No data provided.", show_alert=True)
+        return
+
+    lang = callback_query.data.split(":")[1]
+    user_languages[callback_query.from_user.id] = lang
+    if lang == "en":
+        if callback_query.message:
+            await callback_query.message.reply("Language set to English.")
+    elif lang == "uk":
+        if callback_query.message:
+            await callback_query.message.reply("Мова змінена на українську.")
+    await callback_query.answer()
+
+# Modify responses to use the selected language
+def get_response(user_id: int, en_text: str, uk_text: str) -> str:
+    """Return the response text in the user's preferred language."""
+    lang = user_languages.get(user_id, "en")
+    return en_text if lang == "en" else uk_text
+
+# ================== BOT HANDLERS ==================
 @dp.message(Command("find"))
 async def find_handler(message: types.Message, command: CommandObject) -> None:
     query = command.args
@@ -321,12 +356,21 @@ async def add_site_handler(message: types.Message, command: CommandObject) -> No
         await message.reply("Please provide a valid site URL after the command.\nExample: `/addsite https://example.com`")
         return
 
-    # Validate the URL
     if not re.match(r'https?://[\w.-]+', site_url):
         await message.reply("Invalid URL format. Please provide a valid site URL.")
         return
 
-    # Add the site to the SITES dictionary dynamically
+    try:
+        timeout = aiohttp.ClientTimeout(total=5)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(site_url) as response:
+                if response.status != 200:
+                    await message.reply(f"The site `{site_url}` is not reachable (status code: {response.status}). Please check the URL.")
+                    return
+    except aiohttp.ClientError as e:
+        await message.reply(f"Failed to reach the site `{site_url}`. Error: {str(e)}")
+        return
+
     SITES[site_url] = site_url + "?q={}"
     await message.reply(f"The site `{site_url}` has been added successfully! You can now use `/find` to search it.")
 
