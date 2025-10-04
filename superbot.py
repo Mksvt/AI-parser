@@ -22,6 +22,7 @@ from bs4 import BeautifulSoup
 from newspaper import Article  # type: ignore
 import openai
 from openai import OpenAIError
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # ================== CONFIG ==================
 load_dotenv()
@@ -48,9 +49,11 @@ SITES = {
     "stackoverflow": "https://stackoverflow.com/search?q={}"
 }
 
+scheduler = AsyncIOScheduler()
+
 # ================== DATABASE ==================
 def init_db() -> None:
-    """Initialize the database for caching and user sites."""
+    """Initialize the database for caching, user sites, and subscriptions."""
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute("""
@@ -64,6 +67,12 @@ def init_db() -> None:
         CREATE TABLE IF NOT EXISTS user_sites (
             user_id INTEGER,
             site_url TEXT
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS subscriptions (
+            user_id INTEGER,
+            query TEXT
         )
     """)
     conn.commit()
@@ -144,6 +153,108 @@ def reset_user_sites(user_id: int) -> None:
     cursor.executemany("INSERT INTO user_sites (user_id, site_url) VALUES (?, ?)", [(user_id, site) for site in default_sites])
     conn.commit()
     conn.close()
+
+# ================== SUBSCRIPTIONS ==================
+# Database functions for subscriptions
+def add_subscription(user_id: int, query: str) -> None:
+    """Add a subscription for a user."""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO subscriptions (user_id, query) VALUES (?, ?)", (user_id, query))
+    conn.commit()
+    conn.close()
+
+def remove_subscription(user_id: int, query: str) -> None:
+    """Remove a subscription for a user."""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM subscriptions WHERE user_id = ? AND query = ?", (user_id, query))
+    conn.commit()
+    conn.close()
+
+def get_subscriptions(user_id: int) -> list[str]:
+    """Get all subscriptions for a user."""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT query FROM subscriptions WHERE user_id = ?", (user_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [row[0] for row in rows]
+
+# Command handlers
+@dp.message(Command("subscribe"))
+async def subscribe_handler(message: types.Message, command: CommandObject):
+    """Handle the /subscribe command to add a subscription."""
+    user_id = message.from_user.id if message.from_user else None
+    if not user_id:
+        await message.reply("Не удалось определить ваш идентификатор пользователя.")
+        return
+
+    query = command.args
+    if not query:
+        await message.reply(get_response(user_id, "Please provide a query to subscribe. Example: /subscribe Python", "Будь ласка, вкажіть запит для підписки. Наприклад: /subscribe Python"))
+        return
+
+    add_subscription(user_id, query)
+    await message.reply(get_response(user_id, f"You have successfully subscribed to: {query}", f"Ви успішно підписалися на запит: {query}"))
+
+@dp.message(Command("unsubscribe"))
+async def unsubscribe_handler(message: types.Message, command: CommandObject):
+    """Handle the /unsubscribe command to remove a subscription."""
+    user_id = message.from_user.id if message.from_user else None
+    if not user_id:
+        await message.reply("Не удалось определить ваш идентификатор пользователя.")
+        return
+
+    query = command.args
+    if not query:
+        await message.reply(get_response(user_id, "Please provide a query to unsubscribe. Example: /unsubscribe Python", "Будь ласка, вкажіть запит для відписки. Наприклад: /unsubscribe Python"))
+        return
+
+    remove_subscription(user_id, query)
+    await message.reply(get_response(user_id, f"You have successfully unsubscribed from: {query}", f"Ви успішно відписалися від запиту: {query}"))
+
+@dp.message(Command("subscriptions"))
+async def subscriptions_handler(message: types.Message):
+    """Handle the /subscriptions command to list all subscriptions."""
+    user_id = message.from_user.id if message.from_user else None
+    if not user_id:
+        await message.reply("Не удалось определить ваш идентификатор пользователя.")
+        return
+
+    subscriptions = get_subscriptions(user_id)
+    if not subscriptions:
+        await message.reply(get_response(user_id, "You have no active subscriptions.", "У вас немає активних підписок."))
+        return
+
+    subscriptions_list = "\n".join(subscriptions)
+    await message.reply(get_response(user_id, f"Your subscriptions:\n{subscriptions_list}", f"Ваші підписки:\n{subscriptions_list}"))
+
+# Scheduled task
+async def check_subscriptions():
+    """Check for new articles for all subscriptions."""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT DISTINCT user_id, query FROM subscriptions")
+    subscriptions = cursor.fetchall()
+    conn.close()
+
+    async with aiohttp.ClientSession() as session:
+        for user_id, query in subscriptions:
+            site_results = await asyncio.gather(*[search_links(site, query, session) for site in SITES])
+            all_links = [link for sublist in site_results for link in sublist]
+
+            if all_links:
+                message = get_response(user_id, f"🔔 New articles for '{query}':\n", f"🔔 Нові статті за запитом '{query}':\n")
+                message += "\n".join(all_links[:5])
+                try:
+                    await bot.send_message(chat_id=user_id, text=message)
+                except Exception as e:
+                    logging.error(f"Failed to send message to user {user_id}: {e}")
+
+# Initialize scheduler
+scheduler.add_job(check_subscriptions, "interval", hours=24)
+scheduler.start()
 
 # ================== PARSING ==================
 async def fetch_article(url: str) -> tuple[str | None, str | None]:
@@ -426,54 +537,71 @@ async def add_site_handler(message: types.Message, command: CommandObject) -> No
     SITES[site_url] = site_url + "?q={}"
     await message.reply(f"The site `{site_url}` has been added successfully! You can now use `/find` to search it.")
 
-# ================== COMMAND HANDLERS ==================
-@dp.message_handler(commands=['add_source'])
-async def add_source(message: types.Message):
-    """Handle the /add_source command to add a new site."""
-    user_id = message.from_user.id
-    args = message.get_args()
+# ================== FIXING ERRORS ==================
+from aiogram import types, Dispatcher
+from aiogram.types import Message
 
-    if not args:
+# Fixing the decorator usage
+@dp.message(commands=['add_source'])
+async def add_source(message: Message):
+    """Handle the /add_source command to add a new site."""
+    user_id = message.from_user.id if message.from_user else None
+    if not user_id:
+        await message.reply("Не вдалося визначити ваш ідентифікатор користувача.")
+        return
+
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
         await message.reply("Пожалуйста, укажите URL сайта после команды. Пример: /add_source https://example.com")
         return
 
-    site_url = args.strip()
+    site_url = args[1].strip()
     add_user_site(user_id, site_url)
-    await message.reply(f"Сайт {site_url} успешно добавлен в ваш список.")
+    await message.reply(f"Сайт {site_url} успішно додано до вашого списку.")
 
-@dp.message_handler(commands=['my_sources'])
-async def my_sources(message: types.Message):
+@dp.message(commands=['my_sources'])
+async def my_sources(message: Message):
     """Handle the /my_sources command to list user sites."""
-    user_id = message.from_user.id
-    sites = get_user_sites(user_id)
+    user_id = message.from_user.id if message.from_user else None
+    if not user_id:
+        await message.reply("Не вдалося визначити ваш ідентифікатор користувача.")
+        return
 
+    sites = get_user_sites(user_id)
     if not sites:
-        await message.reply("Ваш список сайтов пуст.")
+        await message.reply("Ваш список сайтів пустий.")
         return
 
     sites_list = "\n".join(sites)
-    await message.reply(f"Ваши сайты:\n{sites_list}")
+    await message.reply(f"Ваші сайти:\n{sites_list}")
 
-@dp.message_handler(commands=['remove_source'])
-async def remove_source(message: types.Message):
+@dp.message(commands=['remove_source'])
+async def remove_source(message: Message):
     """Handle the /remove_source command to remove a site."""
-    user_id = message.from_user.id
-    args = message.get_args()
-
-    if not args:
-        await message.reply("Пожалуйста, укажите URL сайта для удаления. Пример: /remove_source https://example.com")
+    user_id = message.from_user.id if message.from_user else None
+    if not user_id:
+        await message.reply("Не вдалося визначити ваш ідентифікатор користувача.")
         return
 
-    site_url = args.strip()
-    remove_user_site(user_id, site_url)
-    await message.reply(f"Сайт {site_url} успешно удалён из вашего списка.")
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await message.reply("Будь ласка, вкажіть URL сайту для видалення. Приклад: /remove_source https://example.com")
+        return
 
-@dp.message_handler(commands=['reset_sources'])
-async def reset_sources(message: types.Message):
+    site_url = args[1].strip()
+    remove_user_site(user_id, site_url)
+    await message.reply(f"Сайт {site_url} успішно видалено з вашого списку.")
+
+@dp.message(commands=['reset_sources'])
+async def reset_sources(message: Message):
     """Handle the /reset_sources command to reset user sites to default."""
-    user_id = message.from_user.id
+    user_id = message.from_user.id if message.from_user else None
+    if not user_id:
+        await message.reply("Не вдалося визначити ваш ідентифікатор користувача.")
+        return
+
     reset_user_sites(user_id)
-    await message.reply("Ваш список сайтов был сброшен к настройкам по умолчанию.")
+    await message.reply("Ваш список сайтів був скинутий до налаштувань за замовчуванням.")
 
 # ================== RUN ==================
 async def main() -> None:
