@@ -50,7 +50,7 @@ SITES = {
 
 # ================== DATABASE ==================
 def init_db() -> None:
-    """Initialize the database for caching."""
+    """Initialize the database for caching and user sites."""
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute("""
@@ -58,6 +58,12 @@ def init_db() -> None:
             query TEXT,
             response TEXT,
             created_at TIMESTAMP
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS user_sites (
+            user_id INTEGER,
+            site_url TEXT
         )
     """)
     conn.commit()
@@ -92,6 +98,52 @@ def load_cache(query: str, ttl_minutes: int = 60) -> Any | None:
         if datetime.now() - saved_time < timedelta(minutes=ttl_minutes):
             return row[0]
     return None
+
+def get_user_sites(user_id: int) -> list[str]:
+    """Retrieve the list of sites for a specific user."""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT site_url FROM user_sites WHERE user_id = ?", (user_id,))
+    rows = cursor.fetchall()
+    conn.close()
+
+    if not rows:
+        # Add default sites if user has no custom sites
+        default_sites = ["https://realpython.com/search/?q=", "https://medium.com/search?q=", "https://stackoverflow.com/search?q="]
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.executemany("INSERT INTO user_sites (user_id, site_url) VALUES (?, ?)", [(user_id, site) for site in default_sites])
+        conn.commit()
+        conn.close()
+        return default_sites
+
+    return [row[0] for row in rows]
+
+def add_user_site(user_id: int, site_url: str) -> None:
+    """Add a new site to the user's list."""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO user_sites (user_id, site_url) VALUES (?, ?)", (user_id, site_url))
+    conn.commit()
+    conn.close()
+
+def remove_user_site(user_id: int, site_url: str) -> None:
+    """Remove a site from the user's list."""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM user_sites WHERE user_id = ? AND site_url = ?", (user_id, site_url))
+    conn.commit()
+    conn.close()
+
+def reset_user_sites(user_id: int) -> None:
+    """Reset the user's site list to default."""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM user_sites WHERE user_id = ?", (user_id,))
+    default_sites = ["https://realpython.com/search/?q=", "https://medium.com/search?q=", "https://stackoverflow.com/search?q="]
+    cursor.executemany("INSERT INTO user_sites (user_id, site_url) VALUES (?, ?)", [(user_id, site) for site in default_sites])
+    conn.commit()
+    conn.close()
 
 # ================== PARSING ==================
 async def fetch_article(url: str) -> tuple[str | None, str | None]:
@@ -373,6 +425,55 @@ async def add_site_handler(message: types.Message, command: CommandObject) -> No
 
     SITES[site_url] = site_url + "?q={}"
     await message.reply(f"The site `{site_url}` has been added successfully! You can now use `/find` to search it.")
+
+# ================== COMMAND HANDLERS ==================
+@dp.message_handler(commands=['add_source'])
+async def add_source(message: types.Message):
+    """Handle the /add_source command to add a new site."""
+    user_id = message.from_user.id
+    args = message.get_args()
+
+    if not args:
+        await message.reply("Пожалуйста, укажите URL сайта после команды. Пример: /add_source https://example.com")
+        return
+
+    site_url = args.strip()
+    add_user_site(user_id, site_url)
+    await message.reply(f"Сайт {site_url} успешно добавлен в ваш список.")
+
+@dp.message_handler(commands=['my_sources'])
+async def my_sources(message: types.Message):
+    """Handle the /my_sources command to list user sites."""
+    user_id = message.from_user.id
+    sites = get_user_sites(user_id)
+
+    if not sites:
+        await message.reply("Ваш список сайтов пуст.")
+        return
+
+    sites_list = "\n".join(sites)
+    await message.reply(f"Ваши сайты:\n{sites_list}")
+
+@dp.message_handler(commands=['remove_source'])
+async def remove_source(message: types.Message):
+    """Handle the /remove_source command to remove a site."""
+    user_id = message.from_user.id
+    args = message.get_args()
+
+    if not args:
+        await message.reply("Пожалуйста, укажите URL сайта для удаления. Пример: /remove_source https://example.com")
+        return
+
+    site_url = args.strip()
+    remove_user_site(user_id, site_url)
+    await message.reply(f"Сайт {site_url} успешно удалён из вашего списка.")
+
+@dp.message_handler(commands=['reset_sources'])
+async def reset_sources(message: types.Message):
+    """Handle the /reset_sources command to reset user sites to default."""
+    user_id = message.from_user.id
+    reset_user_sites(user_id)
+    await message.reply("Ваш список сайтов был сброшен к настройкам по умолчанию.")
 
 # ================== RUN ==================
 async def main() -> None:
