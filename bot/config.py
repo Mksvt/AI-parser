@@ -7,6 +7,12 @@ API_TOKEN = os.getenv("API_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 DB_FILE = "cache.db"
 
+SITES = {
+    "realpython": "https://realpython.com/search/?q={}",
+    "medium": "https://medium.com/search?q={}",
+    "stackoverflow": "https://stackoverflow.com/search?q={}",
+}
+
 if not API_TOKEN:
     raise ValueError("API_TOKEN not found in .env")
 
