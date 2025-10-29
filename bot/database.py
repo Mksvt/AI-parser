@@ -105,3 +105,28 @@ def reset_user_sites(user_id: int) -> None:
     cursor.executemany("INSERT INTO user_sites (user_id, site_url) VALUES (?, ?)", [(user_id, site) for site in default_sites])
     conn.commit()
     conn.close()
+
+def add_subscription(user_id: int, query: str) -> None:
+    """Add a subscription for a user."""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO subscriptions (user_id, query) VALUES (?, ?)", (user_id, query))
+    conn.commit()
+    conn.close()
+
+def remove_subscription(user_id: int, query: str) -> None:
+    """Remove a subscription for a user."""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM subscriptions WHERE user_id = ? AND query = ?", (user_id, query))
+    conn.commit()
+    conn.close()
+
+def get_subscriptions(user_id: int) -> list[str]:
+    """Get all subscriptions for a user."""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT query FROM subscriptions WHERE user_id = ?", (user_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [row[0] for row in rows]
