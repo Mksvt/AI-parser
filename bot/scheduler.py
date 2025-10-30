@@ -1,10 +1,11 @@
+"""Scheduler for periodic tasks"""
 import logging
 import asyncio
 import sqlite3
 
 import aiohttp
 from aiogram import Bot
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.schedulers.asyncio import AsyncIOScheduler  # type: ignore
 
 from .config import DB_FILE, SITES
 from .parsing import search_links
@@ -33,7 +34,7 @@ async def check_subscriptions(bot: Bot):
                 try:
                     await bot.send_message(chat_id=user_id, text=message_text)
                 except Exception as e:
-                    logging.error(f"Failed to send message to user {user_id}: {e}")
+                    logging.error("Failed to send message to user %s: %s", user_id, e)
 
 def setup_scheduler(bot: Bot):
     """Add the subscription check job to the scheduler."""

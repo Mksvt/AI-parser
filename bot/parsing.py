@@ -40,7 +40,11 @@ async def search_links(site: str, query: str, session: aiohttp.ClientSession) ->
                         links.append("https://realpython.com" + str(href))
             elif site == "medium":
                 results = soup.find_all("a", href=re.compile(r"https://medium.com/.*"))  # type: ignore
-                unique_links = list(dict.fromkeys([str(a.get("href", "")).split("?")[0] for a in results if a.get("href")]))
+                cleaned_links = [
+                    str(a.get("href", "")).split("?", maxsplit=1)[0]
+                    for a in results if a.get("href")
+                ]
+                unique_links = list(dict.fromkeys(cleaned_links))
                 links = unique_links[:5]
             elif site == "stackoverflow":
                 results = soup.select(".s-post-summary--content .s-link")  # type: ignore

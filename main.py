@@ -11,6 +11,9 @@ from aiogram.filters import Command
 
 logging.basicConfig(level=logging.INFO)
 
+if not API_TOKEN:
+    raise ValueError("API_TOKEN is not set in the environment variables.")
+
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
 

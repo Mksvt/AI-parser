@@ -1,6 +1,7 @@
-from aiogram import types, F
-from aiogram.filters import Command, CommandObject
+from aiogram import types
+from aiogram.filters import CommandObject
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.exceptions import TelegramBadRequest
 from .database import add_subscription, remove_subscription, get_subscriptions
 from .localization import get_response, user_languages
 
@@ -38,10 +39,10 @@ async def set_language(callback_query: types.CallbackQuery):
             # Edit the original message to show the choice and remove the buttons
             await callback_query.message.edit_text(
                 f"{callback_query.message.text}\n\n_{response_text}_",
-                reply_markup=None 
+                reply_markup=None
             )
-        except Exception:
-            # If editing fails, just send a new message
+        except TelegramBadRequest:
+            # If editing fails (e.g., message is too old), just send a new message
             await callback_query.message.answer(response_text)
 
     await callback_query.answer()
